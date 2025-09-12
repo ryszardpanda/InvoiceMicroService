@@ -19,6 +19,7 @@ public class InvoiceEventListener {
     @RabbitListener(queues = "invoice.queue")
     public void handleInvoiceRequest(InvoiceRequestEvent event) {
         log.info("Received invoice request for order: {}", event.getOrderNumber());
+        log.debug("Items received: {}", event.getItems());
 
         try {
             invoiceService.processInvoiceRequest(event);
