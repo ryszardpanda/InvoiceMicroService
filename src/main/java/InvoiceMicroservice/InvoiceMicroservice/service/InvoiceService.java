@@ -26,26 +26,31 @@ public class InvoiceService {
 
     private final InvoiceRepository invoiceRepository;
     private final InvoiceMapper invoiceMapper;
+    private final ExternalInvoiceService externalInvoiceService;
 
     public void processInvoiceRequest(InvoiceRequestEvent event) {
         log.info("Processing invoice request for order: {}", event.getOrderNumber());
 
-        // Check if invoice already exists
+        log.info("ExternalInvoiceService is: {}", externalInvoiceService != null ? "injected" : "NULL");
+
         if (invoiceExists(event.getOrderId())) {
             throw new DuplicateInvoiceException(event.getOrderNumber());
         }
 
         try {
-            // Create and save invoice
             Invoice invoice = createInvoiceFromEvent(event);
             Invoice savedInvoice = invoiceRepository.save(invoice);
 
             log.info("Invoice {} created for order {}", savedInvoice.getInvoiceNumber(), event.getOrderNumber());
 
-            // TODO: Call external API to generate PDF
-            // TODO: Send notification/email
+            log.info("About to call generatePdfForInvoice...");
+
+            generatePdfForInvoice(savedInvoice);
+
+            log.info("generatePdfForInvoice completed");
 
         } catch (Exception e) {
+            log.error("Exception in processInvoiceRequest: ", e);
             throw new InvoiceProcessingException(
                     "Failed to create invoice",
                     event.getOrderNumber(),
@@ -59,15 +64,12 @@ public class InvoiceService {
     }
 
     private Invoice createInvoiceFromEvent(InvoiceRequestEvent event) {
-        // Map event to invoice entity
         Invoice invoice = invoiceMapper.toInvoice(event);
 
-        // Generate invoice number
         invoice.setInvoiceNumber(generateInvoiceNumber());
         invoice.setStatus(InvoiceStatus.PENDING);
         invoice.setCreatedAt(LocalDateTime.now());
 
-        // Map items
         List<InvoiceItem> items = event.getItems().stream()
                 .map(itemDto -> {
                     InvoiceItem item = invoiceMapper.toInvoiceItem(itemDto);
@@ -85,5 +87,31 @@ public class InvoiceService {
         String yearPrefix = "INV-" + LocalDate.now().getYear() + "-";
         long count = invoiceRepository.countByInvoiceNumberStartingWith(yearPrefix);
         return yearPrefix + String.format("%06d", count + 1);
+    }
+
+    private void generatePdfForInvoice(Invoice invoice) {
+        log.info("ENTERED generatePdfForInvoice for: {}", invoice.getInvoiceNumber());
+
+        invoice.setStatus(InvoiceStatus.PROCESSING);
+        invoiceRepository.save(invoice);
+
+        try {
+            String pdfUrl = externalInvoiceService.generateInvoicePdf(invoice);
+
+            invoice.setPdfUrl(pdfUrl);
+            invoice.setStatus(InvoiceStatus.GENERATED);
+            invoice.setGeneratedAt(LocalDateTime.now());
+            invoice.setExternalInvoiceId("PDF_GENERATED");
+
+            invoiceRepository.save(invoice);
+
+            log.info("Invoice PDF generated for: {}", invoice.getInvoiceNumber());
+
+        } catch (Exception e) {
+            invoice.setStatus(InvoiceStatus.FAILED);
+            invoiceRepository.save(invoice);
+            log.error("Failed to generate PDF for invoice: {}", invoice.getInvoiceNumber(), e);
+            throw e;
+        }
     }
 }
